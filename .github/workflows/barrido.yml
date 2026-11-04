@@ -1,0 +1,61 @@
+name: Barrido satelital
+
+# Toma cuadrantes de la cola (los de más prioridad primero), los analiza con Sentinel-2 y guarda los
+# candidatos. Corre cada 6 horas con dos trabajadores en paralelo; cada uno se detiene solo antes del
+# límite de tiempo y lo que no llegó queda para la corrida siguiente.
+on:
+  schedule:
+    - cron: "11 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      minutos:
+        description: "Minutos de trabajo por trabajador (máximo 330)"
+        default: "320"
+      max_cuadrantes:
+        description: "Máximo de cuadrantes por trabajador (0 = sin límite; 1 para probar)"
+        default: "0"
+
+concurrency: { group: barrido-satelital, cancel-in-progress: false }
+
+permissions:
+  contents: write   # solo para el latido mensual (evita que GitHub apague las corridas programadas)
+
+jobs:
+  barrer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        trabajador: [1, 2]
+    env:
+      SATELITE_DATABASE_URL: ${{ secrets.SATELITE_DATABASE_URL }}
+      ARENAS_ROOT: ${{ github.workspace }}
+    steps:
+      - name: Verificar clave de la base
+        run: |
+          if [ -z "$SATELITE_DATABASE_URL" ]; then
+            echo "::error::Falta el secreto SATELITE_DATABASE_URL. Cargalo en Settings > Secrets and variables > Actions > New repository secret."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -r requirements.txt
+      - name: Barrer cuadrantes
+        run: |
+          sleep $(( (${{ matrix.trabajador }} - 1) * 20 ))
+          python scripts/territorio/satelite_cola.py --minutos "${{ inputs.minutos || '320' }}" --max "${{ inputs.max_cuadrantes || '0' }}"
+
+  latido:
+    # GitHub apaga las corridas programadas de un repositorio público sin cambios en 60 días.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Latido mensual
+        run: |
+          [ "$(date -u +%d)" = "01" ] && [ "$(date -u +%H)" -lt 6 ] || { echo "Hoy no toca."; exit 0; }
+          date -u +"Último latido: %Y-%m-%d %H:%M UTC" > docs/latido.txt
+          git config user.name "barrido-satelital"; git config user.email "barrido@users.noreply.github.com"
+          git add docs/latido.txt && git commit -m "Latido mensual" && git push

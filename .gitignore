@@ -1,0 +1,6 @@
+__pycache__/
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+.env

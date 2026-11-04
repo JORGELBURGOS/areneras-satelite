@@ -1,0 +1,13 @@
+# Parámetros de la detección satelital de canteras y frentes de arena (Sentinel-2).
+territorio:
+  satelite:
+    ndvi_max: 0.15
+    bsi_min: 0.02
+    brillo_min: 0.12
+    persistencia: 0.8
+    area_min_ha: 0.5
+    area_max_ha: 500
+    resolucion_m: 20
+    tesela_grados: 0.25
+    nubes_max: 30
+    crecimiento: 0.15
