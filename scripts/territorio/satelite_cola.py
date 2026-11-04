@@ -74,15 +74,24 @@ def analizar(t: dict, anio: int, p: dict, tmp: Path) -> list[tuple]:
     return filas
 
 
-def limpiar_url(v: str) -> str:
-    """Tolera cómo se haya pegado el secreto: espacios, comillas, saltos de línea, sin el prefijo postgresql://."""
+def candidatos_url(v: str) -> list[str]:
+    """Tolera cómo se haya pegado el secreto: varias direcciones separadas por espacios o renglones, comillas,
+    una dirección cortada en dos renglones o sin el prefijo postgresql://. Devuelve las direcciones a probar."""
     import re
-    v = re.sub(r"\s+", "", v or "").strip("`'\"")  # una clave pegada en dos renglones queda en uno
-    m = re.search(r"postgres(?:ql)?://\S+", v)
-    if m:
-        return m.group(0).rstrip("`'\"")
-    m = re.search(r"[\w.-]+:[^@\s]+@[\w.-]+(?::\d+)?/\S*", v)
-    return ("postgresql://" + m.group(0)) if m else v
+    v = (v or "").strip().strip("`'\"")
+    partes = [x.strip("`'\"") for x in re.split(r"\s+", v) if x.strip("`'\"")]
+    urls = [x for x in partes if re.match(r"postgres(?:ql)?://\S+@\S+", x)]
+    if not urls:  # dirección partida en renglones: se une todo
+        junto = "".join(partes)
+        m = re.search(r"postgres(?:ql)?://\S+", junto) or re.search(r"[\w.-]+:[^@\s]+@[\w.-]+(?::\d+)?/\S*", junto)
+        if m:
+            urls = [m.group(0) if m.group(0).startswith("postgres") else "postgresql://" + m.group(0)]
+    extra = []
+    for u in urls:  # el pooler de São Paulo tiene dos direcciones; se prueban las dos
+        alt = u.replace("aws-1-", "aws-0-") if "aws-1-" in u else u.replace("aws-0-", "aws-1-")
+        if alt != u and alt not in urls:
+            extra.append(alt)
+    return urls + extra
 
 
 def main() -> int:
@@ -92,9 +101,9 @@ def main() -> int:
     ap.add_argument("--anio", type=int, default=int(os.environ.get("ANIO") or date.today().year - 1))
     ap.add_argument("--tope-cuadrante", type=float, default=float(os.environ.get("TOPE_CUADRANTE_MIN", 25)))
     a = ap.parse_args()
-    url = limpiar_url(os.environ.get("SATELITE_DATABASE_URL", ""))
-    if not url:
-        print("::error::Falta el secreto SATELITE_DATABASE_URL (Settings > Secrets and variables > Actions).")
+    urls = candidatos_url(os.environ.get("SATELITE_DATABASE_URL", ""))
+    if not urls:
+        print("::error::Falta el secreto SATELITE_DATABASE_URL o no tiene el formato postgresql://... (Settings > Secrets and variables > Actions).")
         return 1
     import psycopg
     p = {**DEFAULTS, **load_config().get("territorio", {}).get("satelite", {})}
@@ -102,12 +111,16 @@ def main() -> int:
     prom = 6.0  # minutos estimados por cuadrante hasta medir
     hechos = errores = total_det = 0
     signal.signal(signal.SIGALRM, _alarma)
-    try:
-        cx = psycopg.connect(url, autocommit=True, connect_timeout=20)
-    except psycopg.OperationalError:
-        # el pooler de Supabase en São Paulo tiene dos direcciones; si una no responde se prueba la otra
-        alt = url.replace("aws-1-", "aws-0-") if "aws-1-" in url else url.replace("aws-0-", "aws-1-")
-        cx = psycopg.connect(alt, autocommit=True, connect_timeout=20)
+    cx, errs = None, []
+    for u in urls:
+        try:
+            cx = psycopg.connect(u, autocommit=True, connect_timeout=20, prepare_threshold=None)
+            break
+        except Exception as e:  # noqa: BLE001
+            errs.append(type(e).__name__)
+    if cx is None:
+        print(f"::error::No se pudo conectar a la base ({', '.join(errs)}). Revisá el secreto SATELITE_DATABASE_URL.")
+        return 1
     with cx, cx.cursor() as cur, tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         while True:
