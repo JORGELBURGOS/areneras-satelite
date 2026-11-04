@@ -74,6 +74,17 @@ def analizar(t: dict, anio: int, p: dict, tmp: Path) -> list[tuple]:
     return filas
 
 
+def limpiar_url(v: str) -> str:
+    """Tolera cómo se haya pegado el secreto: espacios, comillas, saltos de línea, sin el prefijo postgresql://."""
+    import re
+    v = re.sub(r"\s+", "", v or "").strip("`'\"")  # una clave pegada en dos renglones queda en uno
+    m = re.search(r"postgres(?:ql)?://\S+", v)
+    if m:
+        return m.group(0).rstrip("`'\"")
+    m = re.search(r"[\w.-]+:[^@\s]+@[\w.-]+(?::\d+)?/\S*", v)
+    return ("postgresql://" + m.group(0)) if m else v
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--minutos", type=float, default=float(os.environ.get("MINUTOS", 320)), help="tiempo total de la corrida")
@@ -81,7 +92,7 @@ def main() -> int:
     ap.add_argument("--anio", type=int, default=int(os.environ.get("ANIO") or date.today().year - 1))
     ap.add_argument("--tope-cuadrante", type=float, default=float(os.environ.get("TOPE_CUADRANTE_MIN", 25)))
     a = ap.parse_args()
-    url = os.environ.get("SATELITE_DATABASE_URL", "")
+    url = limpiar_url(os.environ.get("SATELITE_DATABASE_URL", ""))
     if not url:
         print("::error::Falta el secreto SATELITE_DATABASE_URL (Settings > Secrets and variables > Actions).")
         return 1
