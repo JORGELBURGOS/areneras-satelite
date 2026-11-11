@@ -1,11 +1,11 @@
 name: Barrido satelital
 
 # Toma cuadrantes de la cola (los de más prioridad primero), los analiza con Sentinel-2 y guarda los
-# candidatos. Corre cada 6 horas con dos trabajadores en paralelo; cada uno se detiene solo antes del
+# candidatos. Corre una vez por noche con dos trabajadores en paralelo; cada uno se detiene solo antes del
 # límite de tiempo y lo que no llegó queda para la corrida siguiente.
 on:
   schedule:
-    - cron: "11 */6 * * *"
+    - cron: "11 6 * * *"          # todas las noches, 03:11 hora Argentina
   workflow_dispatch:
     inputs:
       minutos:
