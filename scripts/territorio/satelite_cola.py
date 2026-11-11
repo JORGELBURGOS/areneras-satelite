@@ -74,6 +74,52 @@ def analizar(t: dict, anio: int, p: dict, tmp: Path) -> list[tuple]:
     return filas
 
 
+
+class Base:
+    """Conexión a la base que se reconecta sola. 2026-11-11: la base vive en Neon, que cierra las conexiones
+    que quedan inactivas mientras se analiza un cuadrante (puede tardar más de 20 minutos). Antes de cada
+    escritura se reintenta una vez con una conexión nueva, así no se cae la corrida."""
+
+    def __init__(self, urls: list[str]):
+        self.urls, self.cx, self.cur, self.errs = urls, None, None, []
+
+    def conectar(self) -> bool:
+        import psycopg
+        self.cerrar()
+        for u in self.urls:
+            try:
+                self.cx = psycopg.connect(u, autocommit=True, connect_timeout=20, prepare_threshold=None)
+                self.cur = self.cx.cursor()
+                return True
+            except Exception as e:  # noqa: BLE001
+                self.errs.append(type(e).__name__)
+        return False
+
+    def cerrar(self) -> None:
+        try:
+            if self.cx is not None:
+                self.cx.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self.cx = self.cur = None
+
+    def execute(self, sql, params=None):
+        import psycopg
+        for intento in (1, 2):
+            try:
+                if self.cur is None and not self.conectar():
+                    raise psycopg.OperationalError("no se pudo reconectar a la base")
+                return self.cur.execute(sql, params)
+            except psycopg.OperationalError:
+                if intento == 2:
+                    raise
+                log.info("la conexión con la base se cerró; reconectando")
+                self.conectar()
+
+    def fetchone(self):
+        return self.cur.fetchone()
+
+
 def candidatos_url(v: str) -> list[str]:
     """Tolera cómo se haya pegado el secreto: varias direcciones separadas por espacios o renglones, comillas,
     una dirección cortada en dos renglones o sin el prefijo postgresql://. Devuelve las direcciones a probar."""
@@ -111,17 +157,11 @@ def main() -> int:
     prom = 6.0  # minutos estimados por cuadrante hasta medir
     hechos = errores = total_det = 0
     signal.signal(signal.SIGALRM, _alarma)
-    cx, errs = None, []
-    for u in urls:
-        try:
-            cx = psycopg.connect(u, autocommit=True, connect_timeout=20, prepare_threshold=None)
-            break
-        except Exception as e:  # noqa: BLE001
-            errs.append(type(e).__name__)
-    if cx is None:
-        print(f"::error::No se pudo conectar a la base ({', '.join(errs)}). Revisá el secreto SATELITE_DATABASE_URL.")
+    cur = Base(urls)
+    if not cur.conectar():
+        print(f"::error::No se pudo conectar a la base ({', '.join(cur.errs)}). Revisá el secreto SATELITE_DATABASE_URL.")
         return 1
-    with cx, cx.cursor() as cur, tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         while True:
             if a.max and hechos + errores >= a.max:
